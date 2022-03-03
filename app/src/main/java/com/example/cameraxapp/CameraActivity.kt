@@ -1,6 +1,7 @@
 package com.example.cameraxapp
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.os.Build
@@ -17,6 +18,9 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.PermissionChecker
 import com.example.cameraxapp.databinding.ActivityCameraBinding
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.*
@@ -29,6 +33,8 @@ class CameraActivity : AppCompatActivity() {
     private lateinit var viewBinding: ActivityCameraBinding
 
     private var imageCapture: ImageCapture? = null
+
+    private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
     private var videoCapture: VideoCapture<Recorder>? = null
     private var recording: Recording? = null
@@ -91,29 +97,39 @@ class CameraActivity : AppCompatActivity() {
         }
 
         // Create output options object which contains file + metadata
-        val outputOptions = ImageCapture.OutputFileOptions
-            .Builder(
-                contentResolver,
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                contentValues
-            )
-            .build()
+//        val outputOptions = ImageCapture.OutputFileOptions
+//            .Builder(
+//                contentResolver,
+//                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+//                contentValues
+//            )
+//            .build()
 
         // Set up image capture listener, which is triggered after photo has
         // been taken
         imageCapture.takePicture(
-            outputOptions,
             ContextCompat.getMainExecutor(this),
-            object : ImageCapture.OnImageSavedCallback {
+            object : ImageCapture.OnImageCapturedCallback() {
                 override fun onError(exc: ImageCaptureException) {
                     Log.e(TAG, "Photo capture failed: ${exc.message}", exc)
+                    super.onError(exc)
                 }
 
-                override fun
-                        onImageSaved(output: ImageCapture.OutputFileResults) {
-                    val msg = "Photo capture succeeded: ${output.savedUri}"
-                    Toast.makeText(baseContext, msg, Toast.LENGTH_SHORT).show()
-                    Log.d(TAG, msg)
+                @SuppressLint("UnsafeOptInUsageError")
+                override fun onCaptureSuccess(image: ImageProxy) {
+                    val msg = "Photo capture succeeded: ${image.imageInfo}"
+                    val mediaImage = image.image
+                    if (mediaImage != null) {
+                        val inputImage =
+                            InputImage.fromMediaImage(mediaImage, image.imageInfo.rotationDegrees)
+                        recognizer.process(inputImage).addOnCompleteListener {
+                            val textRecognized = it.result
+                            Log.e("Text Recognition", textRecognized.text)
+                        }
+                        Toast.makeText(baseContext, msg, Toast.LENGTH_SHORT).show()
+                        Log.d(TAG, msg)
+                    }
+                    super.onCaptureSuccess(image)
                 }
             }
         )
@@ -205,24 +221,27 @@ class CameraActivity : AppCompatActivity() {
                     it.setSurfaceProvider(viewBinding.viewFinder.surfaceProvider)
                 }
 
-            val recorder = Recorder.Builder()
-                .setQualitySelector(QualitySelector.from(Quality.SD))
-                .build()
-            videoCapture = VideoCapture.withOutput(recorder)
-
-            imageCapture = ImageCapture.Builder()
-                .build()
-
-//            val imageAnalyzer = ImageAnalysis.Builder()
+//            val recorder = Recorder.Builder()
+//                .setQualitySelector(QualitySelector.from(Quality.SD))
 //                .build()
-//                .also {
-//                    it.setAnalyzer(cameraExecutor, LuminosityAnalyzer { luma ->
-//                        Log.d(TAG, "Average luminosity: $luma")
-//                    })
-//                }
+//            videoCapture = VideoCapture.withOutput(recorder)
+
+            imageCapture =
+                ImageCapture.Builder().setTargetRotation(viewBinding.viewFinder.display.rotation)
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                    .build()
+
+            val imageAnalyzer = ImageAnalysis.Builder()
+                .build()
+                .also {
+                    it.setAnalyzer(cameraExecutor, LuminosityAnalyzer { luma ->
+                        Log.d(TAG, "Average luminosity: $luma")
+                    })
+                }
 
             // Select back camera as a default
-            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+            val cameraSelector =
+                CameraSelector.Builder().requireLensFacing(CameraSelector.LENS_FACING_BACK).build()
 
             try {
                 // Unbind use cases before rebinding
@@ -230,8 +249,10 @@ class CameraActivity : AppCompatActivity() {
 
                 // Bind use cases to camera
                 cameraProvider.bindToLifecycle(
-                    this, cameraSelector, preview, imageCapture, videoCapture
-                )
+                    this, cameraSelector, preview, imageCapture, imageAnalyzer
+                ).also {
+                    it.cameraControl.enableTorch(false)
+                }
 
             } catch (exc: Exception) {
                 Log.e(TAG, "Use case binding failed", exc)
@@ -276,6 +297,7 @@ private class LuminosityAnalyzer(private val listener: LumaListener) : ImageAnal
         return data // Return the byte array
     }
 
+    @SuppressLint("UnsafeOptInUsageError")
     override fun analyze(image: ImageProxy) {
 
         val buffer = image.planes[0].buffer
@@ -287,4 +309,5 @@ private class LuminosityAnalyzer(private val listener: LumaListener) : ImageAnal
 
         image.close()
     }
+
 }
